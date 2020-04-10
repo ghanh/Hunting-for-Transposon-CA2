@@ -1,0 +1,73 @@
+Microsoft Windows
+Version 1903 (OS Build 18362.720)
+
+Distributor ID: Ubuntu
+Description:    Ubuntu 18.04.2 LTS
+Release:        18.04
+Codename:       bionic
+
+# organise files in working directory
+mkdir data	# and store the data files in this 'data' folder
+mkdir results
+mkdir -p results/fastqc results/sam results/bam results/blast results/misc
+
+# install packages
+sudo apt-get install fastqc
+sudo apt-get install bowtie bowtie2
+sudo apt-get install samtools
+sudo apt-get install ncbi-blast+
+
+# blastn ty5_6p as query against reference genome
+blastn -query data/ty5_6p.fa -subject data/sacCer3.fa -evalue 1e-05 > results/blast/blastn_ins2ref.txt
+
+# read QC
+fastqc data/*.fq -o results/fastqc
+for filename in *.zip; do
+	unzip $filename
+	done
+
+## align reads
+# build indexes for reference genome and transposon sequence
+bowtie2-build data/sacCer3 data/ref_ind
+bowtie2-build data/ty5_6p data/ins_ind
+# align reads to reference genome
+bowtie2 -x ref_ind -1 A0171994N_1.fq -2 A0171994N_2.fq results/sam/reads2ref.sam
+# align reads to transposon sequence
+bowtie2 -x ins_ind -1 A0171994N_1.fq -2 A0171994N_2.fq results/sam/reads2ins.sam
+# make corresponding bam files
+samtools view -S -b results/sam/reads2ref.sam > results/bam/reads2ref.bam
+samtools view -S -b results/sam/reads2ins.sam > results/bam/reads2ins.bam
+samtools sort results/bam/reads2ref.bam -o results/bam/reads2ref-sorted.bam
+samtools sort results/bam/reads2ins.bam -o results/bam/reads2ins-sorted.bam 
+
+## filter for "split reads"
+# get reads which only map on one end
+samtools view -b -f 72 -F 4 results/bam/reads2ref-sorted.bam > results/bam/1_reads2ref.bam
+samtools view -b -f 136 -F 4 results/bam/reads2ref-sorted.bam > results/bam/2_reads2ref.bam
+samtools view -b -f 72 -F 4 results/bam/reads2ins-sorted.bam > results/bam/1_reads2ins.bam
+samtools view -b -f 136 -F 4 results/bam/reads2ins-sorted.bam > results/bam/2_reads2ins.bam
+# get names of these reads
+samtools view results/bam/1_reads2ref.bam | cut -f1 | sort | uniq > results/misc/1_reads2ref_qnames.txt
+samtools view results/bam/2_reads2ref.bam | cut -f1 | sort | uniq > results/misc/2_reads2ref_qnames.txt
+samtools view results/bam/1_reads2ins.bam | cut -f1 | sort | uniq > results/misc/1_reads2ins_qnames.txt
+samtools view results/bam/2_reads2ins.bam | cut -f1 | sort | uniq > results/misc/2_reads2ins_qnames.txt
+# find names of reads which map on end 1 to reference only and end 2 to transposon only, and vice versa
+comm results/misc/1_reads2ins_qnames.txt results/misc/2_reads2ref_qnames.txt -1 -2 > results/misc/1ins_2ref.txt
+comm results/misc/2_reads2ins_qnames.txt results/misc/1_reads2ref_qnames.txt -1 -2 > results/misc/2ins_1ref.txt
+# filter from the alignment to genome for these "split reads"
+samtools view -H results/bam/2_reads2ref.bam > results/sam/2_reads2ref_header.sam
+samtools view -H results/bam/1_reads2ref.bam > results/sam/1_reads2ref_header.sam
+samtools view results/bam/1_reads2ref.bam | grep -f results/misc/2ins_1ref.txt | cat results/sam/1_reads2ref_header.sam - | samtools view -Sb - > results/bam/2ins_1ref.bam
+samtools view results/bam/2_reads2ref.bam | grep -f results/misc/1ins_2ref.txt | cat results/sam/2_reads2ref_header.sam - | samtools view -Sb - > results/bam/1ins_2ref.bam
+# rid the mappings to wrong chromosomes
+samtools view -H results/bam/2ins_1ref.bam > results/sam/2ins_1ref_header.sam
+samtools view -H results/bam/1ins_2ref.bam > results/sam/1ins_2ref_header.sam
+samtools view results/bam/2ins_1ref.bam | grep -f results/misc/2ins_1ref-matchchr.txt | cat results/sam/2ins_1ref_header.sam - | samtools view -Sb - > results/bam/2ins_1ref-matchchr.bam
+samtools view results/bam/1ins_2ref.bam | grep -f results/misc/1ins_2ref-matchchr.txt | cat results/sam/1ins_2ref_header.sam - | samtools view -Sb - > results/bam/1ins_2ref-matchchr.bam
+samtools view results/bam/2ins_1ref.bam | grep -f results/misc/2ins_1ref-matchchr.txt | cat results/sam/2ins_1ref_header.sam - | samtools view -Sb - > results/bam/2ins_1ref-matchchr.bam
+samtools view results/bam/1ins_2ref.bam | grep -f results/misc/1ins_2ref-matchchr.txt | cat results/sam/1ins_2ref_header.sam - | samtools view -Sb - > results/bam/1ins_2ref-matchchr.bam
+# sort and index the bam files
+samtools sort results/bam/2ins_1ref-matchchr.bam -o results/bam/2ins_1ref-matchchr-sorted.bam
+samtools sort results/bam/1ins_2ref-matchchr.bam -o results/bam/1ins_2ref-matchchr-sorted.bam
+samtools index results/bam/2ins_1ref-matchchr-sorted.bam
+samtools index results/bam/1ins_2ref-matchchr-sorted.bam
